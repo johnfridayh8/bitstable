@@ -122,7 +122,7 @@
   (let ((existing-vault (default-to {
       collateral: u0,
       debt: u0,
-      last-fee-timestamp: (unwrap-panic (get-block-info? time u0)),
+      last-fee-timestamp: stacks-block-height,
     }
       (map-get? vaults tx-sender)
     )))
