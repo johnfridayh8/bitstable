@@ -315,3 +315,77 @@
     (ok true)
   )
 )
+
+(define-public (add-oracle (oracle principal))
+  ;; Authorizes new price oracle
+  (begin
+    (asserts! (is-eq tx-sender CONTRACT_OWNER) ERR_OWNER_ONLY)
+    (asserts! (not (is-authorized-oracle oracle)) ERR_INVALID_PARAMETER)
+    (map-set price-oracles oracle true)
+    (ok true)
+  )
+)
+
+(define-public (remove-oracle (oracle principal))
+  ;; Revokes oracle authorization
+  (begin
+    (asserts! (is-eq tx-sender CONTRACT_OWNER) ERR_OWNER_ONLY)
+    (asserts! (is-authorized-oracle oracle) ERR_INVALID_PARAMETER)
+    (map-delete price-oracles oracle)
+    (ok true)
+  )
+)
+
+;; EMERGENCY CONTROLS
+
+(define-public (trigger-emergency-shutdown)
+  ;; Activates emergency shutdown to halt new operations
+  (begin
+    (asserts! (is-eq tx-sender CONTRACT_OWNER) ERR_OWNER_ONLY)
+    (var-set emergency-shutdown true)
+    (ok true)
+  )
+)
+
+;; READ-ONLY QUERY FUNCTIONS
+
+(define-read-only (get-vault (owner principal))
+  ;; Returns vault details for specified owner
+  (map-get? vaults owner)
+)
+
+(define-read-only (get-collateral-ratio (owner principal))
+  ;; Calculates current collateralization ratio for vault
+  (let (
+      (vault (unwrap! (map-get? vaults owner) ERR_LOW_BALANCE))
+      (collateral (get collateral vault))
+      (debt (get debt vault))
+    )
+    (if (is-eq debt u0)
+      (ok u0)
+      (ok (/ (* collateral (var-get last-price)) debt))
+    )
+  )
+)
+
+(define-read-only (is-authorized-liquidator (address principal))
+  ;; Checks if address is authorized liquidator
+  (default-to false (map-get? liquidators address))
+)
+
+(define-read-only (is-authorized-oracle (address principal))
+  ;; Checks if address is authorized price oracle
+  (default-to false (map-get? price-oracles address))
+)
+
+(define-read-only (get-stability-parameters)
+  ;; Returns current protocol parameters
+  {
+    minimum-collateral-ratio: (var-get minimum-collateral-ratio),
+    liquidation-ratio: (var-get liquidation-ratio),
+    stability-fee: (var-get stability-fee),
+    price: (var-get last-price),
+    price-valid: (var-get price-valid),
+    emergency-shutdown: (var-get emergency-shutdown),
+  }
+)
