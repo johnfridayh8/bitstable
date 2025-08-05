@@ -96,3 +96,116 @@
     (<= ratio MAXIMUM_RATIO)
   )
 )
+
+(define-private (is-valid-fee (fee uint))
+  ;; Validates stability fee doesn\'t exceed maximum
+  (<= fee MAXIMUM_FEE)
+)
+
+;; CORE PROTOCOL FUNCTIONS
+
+(define-public (initialize (btc-price uint))
+  ;; Initializes the BitStable protocol with starting BTC price
+  (begin
+    (asserts! (is-eq tx-sender CONTRACT_OWNER) ERR_OWNER_ONLY)
+    (asserts! (not (var-get initialized)) ERR_ALREADY_INITIALIZED)
+    (asserts! (is-valid-price btc-price) ERR_INVALID_PARAMETER)
+    (var-set last-price btc-price)
+    (var-set price-valid true)
+    (var-set initialized true)
+    (ok true)
+  )
+)
+
+(define-public (create-vault (collateral-amount uint))
+  ;; Creates or adds collateral to a user\'s vault position
+  (let ((existing-vault (default-to {
+      collateral: u0,
+      debt: u0,
+      last-fee-timestamp: (unwrap-panic (get-block-info? time u0)),
+    }
+      (map-get? vaults tx-sender)
+    )))
+    (begin
+      (asserts! (var-get initialized) ERR_NOT_INITIALIZED)
+      (asserts! (not (var-get emergency-shutdown)) ERR_EMERGENCY_SHUTDOWN)
+      (try! (stx-transfer? collateral-amount tx-sender (as-contract tx-sender)))
+      (map-set vaults tx-sender
+        (merge existing-vault { collateral: (+ collateral-amount (get collateral existing-vault)) })
+      )
+      (ok true)
+    )
+  )
+)
+
+(define-public (mint-stablecoin (amount uint))
+  ;; Mints BitStable tokens against vault collateral
+  (let (
+      (vault (unwrap! (map-get? vaults tx-sender) ERR_LOW_BALANCE))
+      (current-collateral (get collateral vault))
+      (current-debt (get debt vault))
+      (new-debt (+ current-debt amount))
+      (collateral-value (* current-collateral (var-get last-price)))
+    )
+    (begin
+      (asserts! (var-get initialized) ERR_NOT_INITIALIZED)
+      (asserts! (not (var-get emergency-shutdown)) ERR_EMERGENCY_SHUTDOWN)
+      (asserts! (var-get price-valid) ERR_INVALID_PRICE)
+      ;; Enforce minimum collateralization ratio
+      (asserts!
+        (>= (* collateral-value u100)
+          (* new-debt (var-get minimum-collateral-ratio))
+        )
+        ERR_BELOW_MCR
+      )
+      (map-set vaults tx-sender (merge vault { debt: new-debt }))
+      (ok true)
+    )
+  )
+)
+
+(define-public (repay-debt (amount uint))
+  ;; Repays BitStable debt to reduce vault obligation
+  (let (
+      (vault (unwrap! (map-get? vaults tx-sender) ERR_LOW_BALANCE))
+      (current-debt (get debt vault))
+    )
+    (begin
+      (asserts! (var-get initialized) ERR_NOT_INITIALIZED)
+      (asserts! (>= current-debt amount) ERR_LOW_BALANCE)
+      (map-set vaults tx-sender (merge vault { debt: (- current-debt amount) }))
+      (ok true)
+    )
+  )
+)
+
+(define-public (withdraw-collateral (amount uint))
+  ;; Withdraws collateral while maintaining minimum ratios
+  (let (
+      (vault (unwrap! (map-get? vaults tx-sender) ERR_LOW_BALANCE))
+      (current-collateral (get collateral vault))
+      (current-debt (get debt vault))
+      (new-collateral (- current-collateral amount))
+      (collateral-value (* new-collateral (var-get last-price)))
+    )
+    (begin
+      (asserts! (var-get initialized) ERR_NOT_INITIALIZED)
+      (asserts! (not (var-get emergency-shutdown)) ERR_EMERGENCY_SHUTDOWN)
+      (asserts! (var-get price-valid) ERR_INVALID_PRICE)
+      (asserts! (>= current-collateral amount) ERR_LOW_BALANCE)
+      ;; Ensure withdrawal maintains safe collateralization
+      (asserts!
+        (or
+          (is-eq current-debt u0)
+          (>= (* collateral-value u100)
+            (* current-debt (var-get minimum-collateral-ratio))
+          )
+        )
+        ERR_BELOW_MCR
+      )
+      (try! (as-contract (stx-transfer? amount (as-contract tx-sender) tx-sender)))
+      (map-set vaults tx-sender (merge vault { collateral: new-collateral }))
+      (ok true)
+    )
+  )
+)
