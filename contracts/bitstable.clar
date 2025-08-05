@@ -209,3 +209,109 @@
     )
   )
 )
+
+;; LIQUIDATION SYSTEM
+
+(define-public (liquidate (vault-owner principal))
+  ;; Liquidates undercollateralized vaults to protect protocol
+  (let (
+      (vault (unwrap! (map-get? vaults vault-owner) ERR_LOW_BALANCE))
+      (collateral (get collateral vault))
+      (debt (get debt vault))
+      (collateral-value (* collateral (var-get last-price)))
+    )
+    (begin
+      ;; System health checks
+      (asserts! (var-get initialized) ERR_NOT_INITIALIZED)
+      (asserts! (var-get price-valid) ERR_INVALID_PRICE)
+      (asserts! (is-authorized-liquidator tx-sender) ERR_OWNER_ONLY)
+
+      ;; Vault validation
+      (asserts! (> debt u0) ERR_INVALID_PARAMETER)
+
+      ;; Confirm vault is below liquidation threshold
+      (asserts!
+        (< (* collateral-value u100) (* debt (var-get liquidation-ratio)))
+        ERR_INSUFFICIENT_COLLATERAL
+      )
+
+      ;; Execute liquidation with reentrancy protection
+      (let ((collateral-to-transfer collateral))
+        (map-delete vaults vault-owner)
+        (try! (as-contract (stx-transfer? collateral-to-transfer (as-contract tx-sender) tx-sender)))
+        (ok true)
+      )
+    )
+  )
+)
+
+;; ORACLE PRICE MANAGEMENT
+
+(define-public (update-price (new-price uint))
+  ;; Updates BTC/USD price feed from authorized oracles
+  (begin
+    (asserts! (is-authorized-oracle tx-sender) ERR_OWNER_ONLY)
+    (asserts! (is-valid-price new-price) ERR_INVALID_PARAMETER)
+    (var-set last-price new-price)
+    (var-set price-valid true)
+    (ok true)
+  )
+)
+
+;; GOVERNANCE & RISK MANAGEMENT
+
+(define-public (set-minimum-collateral-ratio (new-ratio uint))
+  ;; Updates minimum collateralization requirement
+  (begin
+    (asserts! (is-eq tx-sender CONTRACT_OWNER) ERR_OWNER_ONLY)
+    (asserts! (is-valid-ratio new-ratio) ERR_INVALID_PARAMETER)
+    (asserts! (> new-ratio (var-get liquidation-ratio)) ERR_INVALID_PARAMETER)
+    (var-set minimum-collateral-ratio new-ratio)
+    (ok true)
+  )
+)
+
+(define-public (set-liquidation-ratio (new-ratio uint))
+  ;; Updates liquidation threshold ratio
+  (begin
+    (asserts! (is-eq tx-sender CONTRACT_OWNER) ERR_OWNER_ONLY)
+    (asserts! (is-valid-ratio new-ratio) ERR_INVALID_PARAMETER)
+    (asserts! (< new-ratio (var-get minimum-collateral-ratio))
+      ERR_INVALID_PARAMETER
+    )
+    (var-set liquidation-ratio new-ratio)
+    (ok true)
+  )
+)
+
+(define-public (set-stability-fee (new-fee uint))
+  ;; Updates annual stability fee for borrowing
+  (begin
+    (asserts! (is-eq tx-sender CONTRACT_OWNER) ERR_OWNER_ONLY)
+    (asserts! (is-valid-fee new-fee) ERR_INVALID_PARAMETER)
+    (var-set stability-fee new-fee)
+    (ok true)
+  )
+)
+
+;; ACCESS CONTROL MANAGEMENT
+
+(define-public (add-liquidator (liquidator principal))
+  ;; Authorizes new liquidator address
+  (begin
+    (asserts! (is-eq tx-sender CONTRACT_OWNER) ERR_OWNER_ONLY)
+    (asserts! (not (is-authorized-liquidator liquidator)) ERR_INVALID_PARAMETER)
+    (map-set liquidators liquidator true)
+    (ok true)
+  )
+)
+
+(define-public (remove-liquidator (liquidator principal))
+  ;; Revokes liquidator authorization
+  (begin
+    (asserts! (is-eq tx-sender CONTRACT_OWNER) ERR_OWNER_ONLY)
+    (asserts! (is-authorized-liquidator liquidator) ERR_INVALID_PARAMETER)
+    (map-delete liquidators liquidator)
+    (ok true)
+  )
+)
